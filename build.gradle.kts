@@ -28,6 +28,11 @@ dependencies {
 }
 
 intellijPlatform {
+    // Плагин целиком на Kotlin — Java-классов с @NotNull/@Nullable для инструментирования нет.
+    // instrumentCode ищет "Packages" внутри JAVA_HOME и падает на Microsoft Build of OpenJDK
+    // (ms-21.0.10) на macOS, поэтому отключаем задачу целиком.
+    instrumentCode = false
+
     pluginConfiguration {
         ideaVersion {
             // Compatible with Android Studio Hedgehog (AI-233) and above.

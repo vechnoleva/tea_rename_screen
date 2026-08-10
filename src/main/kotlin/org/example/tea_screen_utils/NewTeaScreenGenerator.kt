@@ -9,6 +9,14 @@ import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.psi.JavaDirectoryService
 import com.intellij.psi.PsiDirectory
 
+/**
+ * Генерирует boilerplate MVP-экрана под текущую навигационную архитектуру проекта
+ * (Cicerone `com.github.terrakok.cicerone` + `wrapScreen`/`wrapScreenWithParams`,
+ * см. `ru.may24.app.core.ui.navigation.fragment.WrappedFragmentScreen`).
+ *
+ * Kotlin-файлы генерируются с табами (детект-правило `NeedToUseTabsInsteadSpaces`),
+ * XML-лейауты — с обычными 4 пробелами (как форматирует Android Studio).
+ */
 class NewTeaScreenGenerator(
     private val project: Project,
     private val selectedDir: PsiDirectory,
@@ -16,17 +24,19 @@ class NewTeaScreenGenerator(
     private val hasParams: Boolean,
     private val hasRecyclerView: Boolean,
     private val isBottomSheet: Boolean,
-    private val isClosable: Boolean,
     private val hasTitledToolbar: Boolean
 ) {
     private val screenNameLower = screenName.lowercase()
     private val screenNameSnake = ScreenNameUtils.pascalToSnake(screenName)
-    private val needsParams = hasParams || (isBottomSheet && !isClosable)
+    private val screenNameCamel = ScreenNameUtils.pascalToCamel(screenName)
+    private val needsParams = hasParams
+    private val parentPackage: String
     private val packageFromFolder: String
 
     init {
         val parentPkg = JavaDirectoryService.getInstance()
             .getPackage(selectedDir)?.qualifiedName ?: ""
+        parentPackage = parentPkg
         packageFromFolder = if (parentPkg.isNotEmpty()) "$parentPkg.$screenNameLower" else screenNameLower
     }
 
@@ -102,7 +112,7 @@ class NewTeaScreenGenerator(
             "import $packageFromFolder.${screenName}Component",
             "import $packageFromFolder.${screenName}Module"
         )
-        val method = "    fun plus(module: ${screenName}Module): ${screenName}Component"
+        val method = "\tfun plus(module: ${screenName}Module): ${screenName}Component"
 
         var text = doc.text
         text = addImports(text, imports)
@@ -111,6 +121,20 @@ class NewTeaScreenGenerator(
         FileDocumentManager.getInstance().saveDocument(doc)
     }
 
+    /**
+     * Добавляет фабричную функцию экрана в `Screens.kt`.
+     *
+     * `Screens.kt` разбит на вложенные `object`-ы по фичам (`Auth`, `Catalog`,
+     * `SalesRepresentative`, …). Пытаемся найти вложенный object, чьё имя совпадает
+     * (без учёта регистра) с одним из сегментов пакета экрана, и вставляем функцию
+     * туда. Если совпадения нет — вставляем функцию прямо в тело `object Screens { }`,
+     * на том же уровне, где уже лежат отдельно стоящие экраны вроде `MaintenanceWork`.
+     *
+     * Rename Screen эту запись отдельно не трогает: с новой навигацией запись — это
+     * просто вызов `ScreenNameFragment.getScreen(...)`, обычное использование класса
+     * Fragment, а не отдельная декларация — RenameProcessor обновит её автоматически
+     * при переименовании самого Fragment-класса.
+     */
     private fun modifyScreens() {
         val path = "${project.basePath}/app/src/main/java/ru/may24/app/ui/navigation/Screens.kt"
         val vf = LocalFileSystem.getInstance().findFileByPath(path) ?: return
@@ -118,10 +142,15 @@ class NewTeaScreenGenerator(
 
         val imports = mutableListOf("import $packageFromFolder.${screenName}Fragment")
         if (needsParams) imports += "import $packageFromFolder.model.${screenName}Params"
+        imports += if (isBottomSheet) {
+            "import ru.may24.app.core.ui.navigation.BottomSheetScreen"
+        } else {
+            "import com.github.terrakok.cicerone.androidx.FragmentScreen"
+        }
 
         var text = doc.text
         text = addImports(text, imports)
-        text = insertBeforeLastBrace(text, "\n${buildScreenEntry()}\n")
+        text = insertScreensEntry(text)
         doc.replaceString(0, doc.textLength, text)
         FileDocumentManager.getInstance().saveDocument(doc)
     }
@@ -134,236 +163,197 @@ class NewTeaScreenGenerator(
 
         // Imports
         appendLine("import android.os.Bundle")
-        if (isBottomSheet) appendLine("import android.app.Dialog")
         appendLine("import android.view.LayoutInflater")
         appendLine("import android.view.View")
         appendLine("import android.view.ViewGroup")
-        if (needsParams) {
-            appendLine("import androidx.core.os.bundleOf")
-            appendLine("import ru.may24.app.core.extensions.parcelable")
-        }
         if (hasRecyclerView) {
             appendLine("import androidx.recyclerview.widget.LinearLayoutManager")
             appendLine("import androidx.recyclerview.widget.LinearLayoutManager.VERTICAL")
-            appendLine("import ru.may24.uikit.ui.adapter.ListViewModel")
-            appendLine("import ru.may24.uikit.ui.adapter.listener.ListItemClickListener")
         }
         appendLine("import by.kirich1409.viewbindingdelegate.viewBinding")
-        if (hasTitledToolbar) appendLine("import ru.may24.uikit.R as UiKitR")
         if (isBottomSheet) {
-            appendLine("import com.google.android.material.bottomsheet.BottomSheetBehavior")
-            appendLine("import com.google.android.material.bottomsheet.BottomSheetDialog")
+            appendLine("import ru.may24.app.core.ui.navigation.BottomSheetScreen")
+        } else {
+            appendLine("import com.github.terrakok.cicerone.androidx.FragmentScreen")
         }
         appendLine("import moxy.presenter.InjectPresenter")
         appendLine("import moxy.presenter.ProvidePresenter")
         appendLine("import ru.may24.app.R")
+        appendLine(
+            "import ru.may24.app.core.ui.navigation.fragment." +
+                if (needsParams) "wrapScreenWithParams" else "wrapScreen"
+        )
         appendLine("import ru.may24.app.databinding.Fragment${screenName}Binding")
-        if (isBottomSheet) {
-            appendLine("import ru.may24.app.ui.fragment.base.BaseBottomSheetFragment")
-            appendLine("import ru.may24.app.ui.navigation.Screens")
-        } else {
-            appendLine("import ru.may24.app.ui.fragment.base.BaseFragment")
+        val base = if (isBottomSheet) "BaseBottomSheetFragment" else "BaseFragment"
+        appendLine("import ru.may24.app.ui.fragment.base.$base")
+        if (needsParams) appendLine("import $packageFromFolder.model.${screenName}Params")
+        if (hasRecyclerView) {
+            appendLine("import $packageFromFolder.adapter.${screenName}Adapter")
+            appendLine("import ru.may24.uikit.ui.adapter.ListViewModel")
+            appendLine("import ru.may24.uikit.ui.adapter.listener.ListItemClickListener")
         }
-        if (hasParams) appendLine("import $packageFromFolder.model.${screenName}Params")
-        if (hasRecyclerView) appendLine("import $packageFromFolder.adapter.${screenName}Adapter")
-        if (isBottomSheet) appendLine("import ru.terrakok.cicerone.Screen")
         appendLine("import javax.inject.Inject")
         appendLine("import javax.inject.Provider")
+        if (hasTitledToolbar) appendLine("import ru.may24.uikit.R as UiKitR")
+        appendLine("import $packageFromFolder.${screenName}Contract as Contract")
         appendLine()
 
         // Class declaration
-        val base = if (isBottomSheet) "BaseBottomSheetFragment" else "BaseFragment"
-        appendLine("class ${screenName}Fragment : $base(), ${screenName}Contract.View {")
+        appendLine("class ${screenName}Fragment : $base(), Contract.View {")
         appendLine()
-        appendLine("    @InjectPresenter")
-        appendLine("    lateinit var presenter: ${screenName}Contract.Presenter")
+        appendLine("\t@InjectPresenter")
+        appendLine("\tlateinit var presenter: Contract.Presenter")
         appendLine()
-        appendLine("    @Inject")
-        appendLine("    lateinit var presenterProvider: Provider<${screenName}Contract.Presenter>")
+        appendLine("\t@Inject")
+        appendLine("\tlateinit var presenterProvider: Provider<Contract.Presenter>")
         appendLine()
-        appendLine("    private val binding by viewBinding(Fragment${screenName}Binding::bind)")
-        if (isBottomSheet) {
-            appendLine()
-            appendLine("    override var screen: Screen? = null")
-        }
+        appendLine("\tprivate val binding by viewBinding(Fragment${screenName}Binding::bind)")
         if (hasRecyclerView) {
             appendLine()
-            appendLine("    @Inject")
-            appendLine("    lateinit var adapter: ${screenName}Adapter")
+            appendLine("\t@Inject")
+            appendLine("\tlateinit var adapter: ${screenName}Adapter")
         }
         appendLine()
 
         // companion object
-        appendLine("    //region ==================== Fragment creation ====================")
+        appendLine("\t//region ==================== Fragment creation ====================")
         appendLine()
-        appendLine("    companion object {")
+        appendLine("\tcompanion object {")
+        appendLine()
+        val screenReturnType = if (isBottomSheet) "BottomSheetScreen" else "FragmentScreen"
         when {
-            isBottomSheet && needsParams -> {
-                appendLine("        private const val KEY_PARAMS = \"KEY_PARAMS\"")
-                appendLine()
-                appendLine("        fun newInstance(screen: Screens.${screenName}Screen, params: ${screenName}Params): ${screenName}Fragment {")
-                appendLine("            val fragment = ${screenName}Fragment().apply {")
-                appendLine("                this.screen = screen")
-                appendLine("            }")
-                appendLine("            fragment.arguments = bundleOf(KEY_PARAMS to params)")
-                appendLine("            return fragment")
-                appendLine("        }")
+            !isBottomSheet && !needsParams -> {
+                appendLine("\t\tfun getScreen(): $screenReturnType {")
+                appendLine("\t\t\treturn wrapScreen<${screenName}Fragment>()")
+                appendLine("\t\t}")
             }
-            isBottomSheet -> {
-                appendLine("        fun newInstance(screen: Screens.${screenName}Screen): ${screenName}Fragment {")
-                appendLine("            return ${screenName}Fragment().apply {")
-                appendLine("                this.screen = screen")
-                appendLine("            }")
-                appendLine("        }")
+            !isBottomSheet && needsParams -> {
+                appendLine("\t\tfun getScreen(params: ${screenName}Params): $screenReturnType {")
+                appendLine("\t\t\treturn wrapScreenWithParams<${screenName}Fragment, ${screenName}Params>(")
+                appendLine("\t\t\t\tparams = params,")
+                appendLine("\t\t\t)")
+                appendLine("\t\t}")
             }
-            hasParams -> {
-                appendLine("        private const val KEY_PARAMS = \"KEY_PARAMS\"")
-                appendLine()
-                appendLine("        fun newInstance(params: ${screenName}Params): ${screenName}Fragment {")
-                appendLine("            val fragment = ${screenName}Fragment()")
-                appendLine("            fragment.arguments = bundleOf(KEY_PARAMS to params)")
-                appendLine("            return fragment")
-                appendLine("        }")
+            isBottomSheet && !needsParams -> {
+                appendLine("\t\tfun getScreen(): $screenReturnType {")
+                appendLine("\t\t\tval wrappedScreen = wrapScreen<${screenName}Fragment>()")
+                appendLine("\t\t\treturn BottomSheetScreen(key = wrappedScreen.screenKey) { factory ->")
+                appendLine("\t\t\t\twrappedScreen.createFragment(factory)")
+                appendLine("\t\t\t}")
+                appendLine("\t\t}")
             }
-            else -> {
-                appendLine("        fun newInstance(): ${screenName}Fragment {")
-                appendLine("            return ${screenName}Fragment()")
-                appendLine("        }")
+            else -> { // isBottomSheet && needsParams
+                appendLine("\t\tfun getScreen(params: ${screenName}Params): $screenReturnType {")
+                appendLine("\t\t\tval wrappedScreen = wrapScreenWithParams<${screenName}Fragment, ${screenName}Params>(")
+                appendLine("\t\t\t\tparams = params,")
+                appendLine("\t\t\t)")
+                appendLine("\t\t\treturn BottomSheetScreen(key = wrappedScreen.screenKey) { factory ->")
+                appendLine("\t\t\t\twrappedScreen.createFragment(factory)")
+                appendLine("\t\t\t}")
+                appendLine("\t\t}")
             }
         }
-        appendLine("    }")
+        appendLine("\t}")
         appendLine()
-        appendLine("    //endregion")
+        appendLine("\t//endregion")
         appendLine()
 
         // Lifecycle
-        appendLine("    //region ==================== Lifecycle ====================")
+        appendLine("\t//region ==================== Lifecycle ====================")
         appendLine()
-        appendLine("    override fun onCreate(savedInstanceState: Bundle?) {")
-        appendLine("        configureDI()")
-        appendLine("        super.onCreate(savedInstanceState)")
-        appendLine("    }")
+        appendLine("\toverride fun onCreate(savedInstanceState: Bundle?) {")
+        appendLine("\t\tconfigureDI()")
+        appendLine("\t\tsuper.onCreate(savedInstanceState)")
+        appendLine("\t}")
         appendLine()
-        appendLine("    override fun onCreateView(")
-        appendLine("        inflater: LayoutInflater,")
-        appendLine("        container: ViewGroup?,")
-        appendLine("        savedInstanceState: Bundle?")
-        // Bottom Sheet returns View? (nullable) per spec
-        if (isBottomSheet) {
-            appendLine("    ): View? {")
-        } else {
-            appendLine("    ): View {")
-        }
-        appendLine("        return inflater.inflate(R.layout.fragment_${screenNameSnake}, container, false)")
-        appendLine("    }")
+        appendLine("\toverride fun onCreateView(")
+        appendLine("\t\tinflater: LayoutInflater,")
+        appendLine("\t\tcontainer: ViewGroup?,")
+        appendLine("\t\tsavedInstanceState: Bundle?")
+        appendLine("\t): View? {")
+        appendLine("\t\treturn inflater.inflate(R.layout.fragment_${screenNameSnake}, container, false)")
+        appendLine("\t}")
         appendLine()
-        appendLine("    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {")
-        appendLine("        super.onViewCreated(view, savedInstanceState)")
-        appendLine("        initUI()")
-        appendLine("    }")
-        if (isBottomSheet) {
-            appendLine()
-            appendLine("    override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {")
-            if (isClosable) {
-                appendLine("        val dialog = super.onCreateDialog(savedInstanceState)")
-                appendLine("        if (dialog is BottomSheetDialog) {")
-                appendLine("            dialog.behavior.skipCollapsed = true")
-                appendLine("            dialog.behavior.state = BottomSheetBehavior.STATE_EXPANDED")
-                appendLine("        }")
-                appendLine("        return dialog")
-            } else {
-                appendLine("        val dialog = super.onCreateDialog(savedInstanceState) as BottomSheetDialog")
-                appendLine("        val isClosable = requireNotNull(")
-                appendLine("            requireArguments().parcelable<${screenName}Params>(KEY_PARAMS)")
-                appendLine("        ).isClosable")
-                appendLine("        if (!isClosable) {")
-                appendLine("            lockDialog(dialog)")
-                appendLine("        }")
-                appendLine("        return dialog")
-            }
-            appendLine("    }")
-            appendLine()
-            appendLine("    override fun onDestroy() {")
-            appendLine("        screen?.let { presenter.removeBottomSheetFromQueue(it) }")
-            appendLine("        super.onDestroy()")
-            appendLine("    }")
-        }
+        appendLine("\toverride fun onViewCreated(view: View, savedInstanceState: Bundle?) {")
+        appendLine("\t\tsuper.onViewCreated(view, savedInstanceState)")
+        appendLine("\t\tinitUI()")
+        appendLine("\t}")
         appendLine()
-        appendLine("    //endregion")
+        appendLine("\t//endregion")
         appendLine()
 
         // UI handlers
         if (hasRecyclerView || hasTitledToolbar) {
-            appendLine("    //region ==================== UI handlers ====================")
+            appendLine("\t//region ==================== UI handlers ====================")
             appendLine()
             if (hasRecyclerView) {
-                appendLine("    private val itemClickListener = object : ListItemClickListener {")
-                appendLine("        override fun onListItemClicked(delegateViewModel: ListViewModel) {")
-                appendLine("            presenter.onItemClicked(delegateViewModel)")
-                appendLine("        }")
-                appendLine("    }")
+                appendLine("\tprivate val itemClickListener = object : ListItemClickListener {")
+                appendLine("\t\toverride fun onListItemClicked(delegateViewModel: ListViewModel) {")
+                appendLine("\t\t\tpresenter.onItemClicked(delegateViewModel)")
+                appendLine("\t\t}")
+                appendLine("\t}")
                 if (hasTitledToolbar) appendLine()
             }
             if (hasTitledToolbar) {
-                appendLine("    val btnBackClickListener = View.OnClickListener { presenter.onBackButtonClicked() }")
+                appendLine("\tprivate val btnBackClickListener = View.OnClickListener { presenter.onBackButtonClicked() }")
             }
             appendLine()
-            appendLine("    //endregion")
+            appendLine("\t//endregion")
             appendLine()
         }
 
         // Contract.View
-        appendLine("    //region ==================== Contract.View ====================")
+        appendLine("\t//region ==================== Contract.View ====================")
         appendLine()
         if (hasRecyclerView) {
-            appendLine("    override fun showItemList(list: List<ListViewModel>) {")
-            appendLine("        adapter.swapItems(list)")
-            appendLine("    }")
+            appendLine("\toverride fun showItemList(list: List<ListViewModel>) {")
+            appendLine("\t\tadapter.swapItems(list)")
+            appendLine("\t}")
             appendLine()
         }
-        appendLine("    //endregion")
+        appendLine("\t//endregion")
         appendLine()
 
         // DI
-        appendLine("    //region ==================== DI ====================")
+        appendLine("\t//region ==================== DI ====================")
         appendLine()
-        appendLine("    private fun configureDI() {")
-        if (hasParams) {
-            appendLine("        val params = requireNotNull(requireArguments().parcelable<${screenName}Params>(KEY_PARAMS))")
+        appendLine("\tprivate fun configureDI() {")
+        if (needsParams) {
+            appendLine("\t\tval params = getParams<${screenName}Params>()")
         }
         val moduleArgs = mutableListOf<String>()
-        if (hasParams) moduleArgs += "params"
+        if (needsParams) moduleArgs += "params"
         if (hasRecyclerView) moduleArgs += "itemClickListener"
-        appendLine("        val component = getAppComponent().plus(${screenName}Module(${moduleArgs.joinToString(", ")}))")
-        appendLine("        component.inject(this)")
-        appendLine("    }")
+        appendLine("\t\tval component = getAppComponent().plus(${screenName}Module(${moduleArgs.joinToString(", ")}))")
+        appendLine("\t\tcomponent.inject(this)")
+        appendLine("\t}")
         appendLine()
-        appendLine("    @ProvidePresenter")
-        appendLine("    internal fun providePresenter() = presenterProvider.get()")
+        appendLine("\t@ProvidePresenter")
+        appendLine("\tinternal fun providePresenter() = presenterProvider.get()")
         appendLine()
-        appendLine("    //endregion")
+        appendLine("\t//endregion")
         appendLine()
 
         // UI
-        appendLine("    //region ==================== UI ====================")
+        appendLine("\t//region ==================== UI ====================")
         appendLine()
-        appendLine("    private fun initUI() = with(binding) {")
+        appendLine("\tprivate fun initUI() = with(binding) {")
         if (hasTitledToolbar) {
-            appendLine("        setupToolbar(")
-            appendLine("            binding.root,")
-            appendLine("            \"$screenName\",")
-            appendLine("            UiKitR.drawable.ic_back_grey_32,")
-            appendLine("            backButtonEnabled = true,")
-            appendLine("            btnBackClickListener")
-            appendLine("        )")
+            appendLine("\t\tsetupToolbar(")
+            appendLine("\t\t\tbinding.root,")
+            appendLine("\t\t\t\"$screenName\",")
+            appendLine("\t\t\tUiKitR.drawable.ic_back_grey_32,")
+            appendLine("\t\t\tbackButtonEnabled = true,")
+            appendLine("\t\t\tbtnBackClickListener")
+            appendLine("\t\t)")
         }
         if (hasRecyclerView) {
-            appendLine("        recyclerView.layoutManager = LinearLayoutManager(context, VERTICAL, false)")
-            appendLine("        recyclerView.adapter = adapter")
+            appendLine("\t\trecyclerView.layoutManager = LinearLayoutManager(context, VERTICAL, false)")
+            appendLine("\t\trecyclerView.adapter = adapter")
         }
-        appendLine("    }")
+        appendLine("\t}")
         appendLine()
-        appendLine("    //endregion")
+        appendLine("\t//endregion")
         append("}")
     }
 
@@ -378,20 +368,20 @@ class NewTeaScreenGenerator(
         appendLine()
         appendLine("interface ${screenName}Contract {")
         appendLine()
-        appendLine("    @StateStrategyType(value = AddToEndSingleStrategy::class)")
-        appendLine("    interface View : MvpView {")
+        appendLine("\t@StateStrategyType(value = AddToEndSingleStrategy::class)")
+        appendLine("\tinterface View : MvpView {")
         if (hasRecyclerView) {
-            appendLine("        fun showItemList(list: List<ListViewModel>)")
+            appendLine("\t\tfun showItemList(list: List<ListViewModel>)")
         }
-        appendLine("    }")
+        appendLine("\t}")
         appendLine()
         if (hasRecyclerView || hasTitledToolbar) {
-            appendLine("    abstract class Presenter : BaseDisposablePresenter<View>() {")
-            if (hasRecyclerView) appendLine("        abstract fun onItemClicked(viewModel: ListViewModel)")
-            if (hasTitledToolbar) appendLine("        abstract fun onBackButtonClicked()")
-            appendLine("    }")
+            appendLine("\tabstract class Presenter : BaseDisposablePresenter<View>() {")
+            if (hasRecyclerView) appendLine("\t\tabstract fun onItemClicked(viewModel: ListViewModel)")
+            if (hasTitledToolbar) appendLine("\t\tabstract fun onBackButtonClicked()")
+            appendLine("\t}")
         } else {
-            appendLine("    abstract class Presenter : BaseDisposablePresenter<View>()")
+            appendLine("\tabstract class Presenter : BaseDisposablePresenter<View>()")
         }
         append("}")
     }
@@ -399,35 +389,33 @@ class NewTeaScreenGenerator(
     private fun presenterContent(): String = buildString {
         appendLine("package $packageFromFolder")
         appendLine()
-        appendLine("import ru.terrakok.cicerone.Router")
-        if (hasParams) appendLine("import $packageFromFolder.model.${screenName}Params")
-        if (hasRecyclerView) {
-            appendLine("import ru.may24.uikit.ui.adapter.ListViewModel")
-            appendLine("import $packageFromFolder.mapper.${screenName}Mapper")
-        }
+        appendLine("import com.github.terrakok.cicerone.Router")
+        if (needsParams) appendLine("import $packageFromFolder.model.${screenName}Params")
+        if (hasRecyclerView) appendLine("import ru.may24.uikit.ui.adapter.ListViewModel")
         appendLine("import javax.inject.Inject")
+        if (hasRecyclerView) appendLine("import $packageFromFolder.mapper.${screenName}Mapper as Mapper")
         appendLine()
         appendLine("class ${screenName}Presenter @Inject constructor(")
-        appendLine("    private val router: Router,")
-        if (hasParams) appendLine("    private val params: ${screenName}Params,")
-        if (hasRecyclerView) appendLine("    private val mapper: ${screenName}Mapper,")
+        appendLine("\tprivate val router: Router,")
+        if (needsParams) appendLine("\tprivate val params: ${screenName}Params,")
+        if (hasRecyclerView) appendLine("\tprivate val mapper: Mapper,")
         appendLine(") : ${screenName}Contract.Presenter() {")
         appendLine()
-        appendLine("    //region ==================== MVP Presenter ====================")
+        appendLine("\t//region ==================== MVP Presenter ====================")
         appendLine()
-        appendLine("    //endregion")
+        appendLine("\t//endregion")
         appendLine()
-        appendLine("    //region ==================== ${screenName}Contract.Presenter ====================")
+        appendLine("\t//region ==================== ${screenName}Contract.Presenter ====================")
         appendLine()
         if (hasRecyclerView) {
-            appendLine("    override fun onItemClicked(viewModel: ListViewModel) = Unit")
+            appendLine("\toverride fun onItemClicked(viewModel: ListViewModel) = Unit")
             appendLine()
         }
         if (hasTitledToolbar) {
-            appendLine("    override fun onBackButtonClicked() = router.exit()")
+            appendLine("\toverride fun onBackButtonClicked() = router.exit()")
             appendLine()
         }
-        appendLine("    //endregion")
+        appendLine("\t//endregion")
         append("}")
     }
 
@@ -437,23 +425,25 @@ class NewTeaScreenGenerator(
         appendLine("import dagger.Module")
         appendLine("import dagger.Provides")
         appendLine("import dagger.Subcomponent")
-        if (hasParams) appendLine("import $packageFromFolder.model.${screenName}Params")
+        if (needsParams) appendLine("import $packageFromFolder.model.${screenName}Params")
+        if (hasRecyclerView) appendLine("import ru.may24.uikit.ui.adapter.listener.ListItemClickListener")
+        appendLine("import $packageFromFolder.${screenName}Contract as Contract")
+        appendLine("import $packageFromFolder.${screenName}Presenter as Presenter")
         if (hasRecyclerView) {
-            appendLine("import ru.may24.uikit.ui.adapter.listener.ListItemClickListener")
-            appendLine("import $packageFromFolder.mapper.${screenName}Mapper")
-            appendLine("import $packageFromFolder.mapper.${screenName}MapperImpl")
+            appendLine("import $packageFromFolder.mapper.${screenName}Mapper as Mapper")
+            appendLine("import $packageFromFolder.mapper.${screenName}MapperImpl as MapperImpl")
         }
         appendLine()
         appendLine("@Subcomponent(modules = [${screenName}Module::class])")
         appendLine("interface ${screenName}Component {")
-        appendLine("    fun inject(fragment: ${screenName}Fragment)")
+        appendLine("\tfun inject(fragment: ${screenName}Fragment)")
         appendLine("}")
         appendLine()
         appendLine("@Module")
 
         val ctorLines = mutableListOf<String>()
-        if (hasParams) ctorLines += "    private val params: ${screenName}Params,"
-        if (hasRecyclerView) ctorLines += "    private val listItemClickListener: ListItemClickListener,"
+        if (needsParams) ctorLines += "\tprivate val params: ${screenName}Params,"
+        if (hasRecyclerView) ctorLines += "\tprivate val listItemClickListener: ListItemClickListener,"
 
         when (ctorLines.size) {
             0 -> appendLine("class ${screenName}Module {")
@@ -465,22 +455,20 @@ class NewTeaScreenGenerator(
             }
         }
         appendLine()
-        appendLine("    @Provides")
-        appendLine("    fun presenter(presenter: ${screenName}Presenter): ${screenName}Contract.Presenter {")
-        appendLine("        return presenter")
-        appendLine("    }")
-        if (hasParams) {
+        appendLine("\t@Provides")
+        appendLine("\tfun presenter(presenter: Presenter): Contract.Presenter = presenter")
+        if (needsParams) {
             appendLine()
-            appendLine("    @Provides")
-            appendLine("    fun provideParams() = params")
+            appendLine("\t@Provides")
+            appendLine("\tfun provideParams() = params")
         }
         if (hasRecyclerView) {
             appendLine()
-            appendLine("    @Provides")
-            appendLine("    fun provideListItemClickListener() = listItemClickListener")
+            appendLine("\t@Provides")
+            appendLine("\tfun provideListItemClickListener() = listItemClickListener")
             appendLine()
-            appendLine("    @Provides")
-            appendLine("    fun provideMapper(mapperImpl: ${screenName}MapperImpl): ${screenName}Mapper = mapperImpl")
+            appendLine("\t@Provides")
+            appendLine("\tfun provideMapper(impl: MapperImpl): Mapper = impl")
         }
         append("}")
     }
@@ -492,9 +480,9 @@ class NewTeaScreenGenerator(
         appendLine("import javax.inject.Inject")
         appendLine()
         appendLine("class ${screenName}Adapter @Inject constructor() : DiffAdapter() {")
-        appendLine("    init {")
-        appendLine("        delegatesManager")
-        appendLine("    }")
+        appendLine("\tinit {")
+        appendLine("\t\tdelegatesManager")
+        appendLine("\t}")
         append("}")
     }
 
@@ -505,7 +493,7 @@ class NewTeaScreenGenerator(
         appendLine()
         appendLine("interface ${screenName}Mapper {")
         appendLine()
-        appendLine("    fun mapToUI(): List<ListViewModel>")
+        appendLine("\tfun mapToUI(): List<ListViewModel>")
         append("}")
     }
 
@@ -517,10 +505,10 @@ class NewTeaScreenGenerator(
         appendLine()
         appendLine("class ${screenName}MapperImpl @Inject constructor() : ${screenName}Mapper {")
         appendLine()
-        appendLine("    override fun mapToUI(): List<ListViewModel> {")
-        appendLine("        val viewModels = mutableListOf<ListViewModel>()")
-        appendLine("        return viewModels")
-        appendLine("    }")
+        appendLine("\toverride fun mapToUI(): List<ListViewModel> {")
+        appendLine("\t\tval viewModels = mutableListOf<ListViewModel>()")
+        appendLine("\t\treturn viewModels")
+        appendLine("\t}")
         append("}")
     }
 
@@ -532,8 +520,7 @@ class NewTeaScreenGenerator(
         appendLine()
         appendLine("@Parcelize")
         appendLine("data class ${screenName}Params(")
-        if (hasParams) appendLine("    val someId: String = \"\",")
-        if (isBottomSheet && !isClosable) appendLine("    val isClosable: Boolean,")
+        appendLine("\tval someId: String = \"\",")
         append(") : Parcelable")
     }
 
@@ -570,35 +557,53 @@ class NewTeaScreenGenerator(
         append("</androidx.constraintlayout.widget.ConstraintLayout>")
     }
 
-    private fun buildScreenEntry(): String = buildString {
-        when {
-            !isBottomSheet && !hasParams -> {
-                appendLine("    class ${screenName}Screen : SupportAppScreen() {")
-                appendLine("        override fun getFragment() = ${screenName}Fragment.newInstance()")
-                append("    }")
-            }
-            !isBottomSheet && hasParams -> {
-                appendLine("    @Parcelize")
-                appendLine("    class ${screenName}Screen(val params: ${screenName}Params) : SupportAppScreen(), Parcelable {")
-                appendLine("        override fun getFragment() = ${screenName}Fragment.newInstance(params)")
-                append("    }")
-            }
-            isBottomSheet && !needsParams -> {
-                appendLine("    class ${screenName}Screen : BottomSheetScreen() {")
-                appendLine("        override fun getFragment(): Fragment {")
-                appendLine("            return ${screenName}Fragment.newInstance(this)")
-                appendLine("        }")
-                append("    }")
-            }
-            else -> { // isBottomSheet && needsParams
-                appendLine("    @Parcelize")
-                appendLine("    class ${screenName}Screen(val params: ${screenName}Params) : BottomSheetScreen(), Parcelable {")
-                appendLine("        override fun getFragment(): Fragment {")
-                appendLine("            return ${screenName}Fragment.newInstance(this, params)")
-                appendLine("        }")
-                append("    }")
-            }
+    // ─── Screens.kt entry ──────────────────────────────────────────────────────
+
+    private fun screensEntryContent(baseIndent: String): String = buildString {
+        val returnType = if (isBottomSheet) "BottomSheetScreen" else "FragmentScreen"
+        val paramArg = if (needsParams) "params: ${screenName}Params" else ""
+        val callArg = if (needsParams) "params" else ""
+        appendLine("$baseIndent\tfun $screenNameCamel($paramArg): $returnType {")
+        appendLine("$baseIndent\t\treturn ${screenName}Fragment.getScreen($callArg)")
+        append("$baseIndent\t}")
+    }
+
+    /** Сегменты пакета выбранной директории, без общих для всех экранов частей. */
+    private fun parentPackageSegments(): List<String> {
+        val boilerplate = setOf("ru", "may24", "app", "ui", "fragment")
+        return parentPackage.split(".").filterNot { it in boilerplate || it.isBlank() }
+    }
+
+    /** Имя вложенного `object` внутри `Screens.kt`, совпадающее с сегментом пакета экрана. */
+    private fun findMatchingFeatureObject(text: String): String? {
+        val segments = parentPackageSegments()
+        if (segments.isEmpty()) return null
+        val objectRegex = Regex("(?m)^\\tobject (\\w+)\\s*\\{")
+        return objectRegex.findAll(text)
+            .map { it.groupValues[1] }
+            .firstOrNull { objName -> segments.any { it.equals(objName, ignoreCase = true) } }
+    }
+
+    private fun insertScreensEntry(text: String): String {
+        val targetObject = findMatchingFeatureObject(text)
+        if (targetObject != null) {
+            val inserted = insertIntoObject(text, targetObject)
+            if (inserted != null) return inserted
         }
+        // Фолбэк: вставляем прямо в тело `object Screens { ... }`, тем же способом,
+        // каким и раньше добавлялись top-level записи вроде MaintenanceWork.
+        return insertBeforeLastBrace(text, "\n" + screensEntryContent("") + "\n")
+    }
+
+    private fun insertIntoObject(text: String, objectName: String): String? {
+        val openRegex = Regex("(?m)^\\tobject ${Regex.escape(objectName)}\\s*\\{")
+        val openMatch = openRegex.find(text) ?: return null
+        val searchStart = openMatch.range.last + 1
+        val closeRegex = Regex("(?m)^\\t\\}$")
+        val closeMatch = closeRegex.find(text, searchStart) ?: return null
+        val insertPos = closeMatch.range.first
+        val entry = "\n" + screensEntryContent("\t") + "\n"
+        return text.substring(0, insertPos) + entry + text.substring(insertPos)
     }
 
     // ─── Text manipulation helpers ────────────────────────────────────────────

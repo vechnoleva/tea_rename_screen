@@ -72,11 +72,8 @@ object ScreenElementsFinder {
     private fun resolveFromPsiClass(cls: PsiClass): String? {
         val name = cls.name ?: return null
 
-        // Внутренний класс/объект внутри «Screens»: class Screens { class SomeScreen }
-        val parent = cls.containingClass
-        if (parent?.name == "Screens") return name
-
         // Внутренний класс DI-класса: SomeScreenModule / SomeScreenComponent
+        val parent = cls.containingClass
         if (parent?.name?.endsWith("DI") == true) {
             return parent.name?.removeSuffix("DI")?.takeIf { it.isNotEmpty() }
         }
@@ -96,11 +93,8 @@ object ScreenElementsFinder {
     private fun resolveFromName(name: String?, owner: PsiNameIdentifierOwner): String? {
         if (name == null) return null
 
-        // Проверка: находится ли внутри класса «Screens»
-        val parentNamed = PsiTreeUtil.getParentOfType(owner, PsiNameIdentifierOwner::class.java)
-        if (parentNamed?.name == "Screens") return name
-
         // Проверка: находится ли внутри DI-класса
+        val parentNamed = PsiTreeUtil.getParentOfType(owner, PsiNameIdentifierOwner::class.java)
         if (parentNamed?.name?.endsWith("DI") == true) {
             return parentNamed.name?.removeSuffix("DI")?.takeIf { it.isNotEmpty() }
         }
@@ -144,10 +138,15 @@ object ScreenElementsFinder {
      * Элементы добавляются в порядке переименования:
      *   1. Классы верхнего уровня Kotlin/Java (Fragment, Presenter, …)
      *   2. Внутренние классы (Module, Component внутри DI)
-     *   3. Запись экрана в «Screens»
-     *   4. XML-файл лейаута
-     *   5. Директория/пакет экрана (последним — переименовывается после классов,
-     *      чтобы PSI-поиск по короткому имени работал на шагах 1–4)
+     *   3. XML-файл лейаута
+     *   4. Директория/пакет экрана (последним — переименовывается после классов,
+     *      чтобы PSI-поиск по короткому имени работал на шагах 1–3)
+     *
+     * Запись экрана в «Screens.kt» отдельно не ищется: с текущей навигацией
+     * (`wrapScreen`/`wrapScreenWithParams`) это просто вызов `OldNameFragment.getScreen(...)`
+     * внутри функции вложенного feature-object'а — обычное использование класса Fragment,
+     * а не отдельная декларация. RenameProcessor для класса Fragment (шаг 1) находит
+     * и обновляет и эту ссылку через обычный usage-search.
      */
     fun findScreenElements(
         project: Project,
@@ -188,20 +187,13 @@ object ScreenElementsFinder {
             }
         }
 
-        // 3. Внутренний класс/объект внутри любого класса с именем «Screens»
-        cache.getClassesByName("Screens", scope).forEach { screensClass ->
-            screensClass.innerClasses.find { it.name == oldName }?.let { entry ->
-                result[entry] = newName
-            }
-        }
-
-        // 4. Файл лейаута: fragment_old_screen.xml
+        // 3. Файл лейаута: fragment_old_screen.xml
         val layoutFileName = ScreenNameUtils.toLayoutFileName(oldName)
         FilenameIndex.getFilesByName(project, layoutFileName, scope).forEach { psiFile ->
             result[psiFile] = ScreenNameUtils.toLayoutFileName(newName)
         }
 
-        // 4б. View Binding-класс, сгенерированный из лейаута (Fragment${oldName}Binding).
+        // 3б. View Binding-класс, сгенерированный из лейаута (Fragment${oldName}Binding).
         //     Добавление его сюда заставляет RenameProcessor обновить все ссылки в исходниках
         //     (например, вызов inflate() во Fragment). Сам сгенерированный файл класса исключён
         //     из шага физического переименования в MultiRenameProcessor (проверка пути build/)
@@ -211,7 +203,7 @@ object ScreenElementsFinder {
             result[cls] = ScreenNameUtils.toBindingClassName(newName)
         }
 
-        // 5. Директория пакета экрана — добавляется последней, чтобы переименование классов
+        // 4. Директория пакета экрана — добавляется последней, чтобы переименование классов
         //    выполнилось первым. RenameProcessor для PsiDirectory запускает полное переименование
         //    пакета, обновляя все объявления «package» и инструкции import.
         findScreenDirectory(project, oldName)?.let { dir ->

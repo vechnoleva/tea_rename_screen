@@ -36,7 +36,6 @@ class NewTeaScreenAction : AnAction() {
             hasParams = dialog.hasParams,
             hasRecyclerView = dialog.hasRecyclerView,
             isBottomSheet = dialog.isBottomSheet,
-            isClosable = dialog.isClosable,
             hasTitledToolbar = dialog.hasTitledToolbar
         ).generate()
     }

@@ -23,6 +23,24 @@ object ScreenNameUtils {
             part.replaceFirstChar { it.uppercase() }
         }
 
+    /**
+     * "SomeScreen" → "someScreen", "SRHome" → "srHome", "SRPhone" → "srPhone".
+     *
+     * Обычный decapitalize ломается на именах с ведущей аббревиатурой (SRHome → sRHome).
+     * Если первые два символа заглавные, опускаем всю ведущую аббревиатуру, оставляя
+     * заглавной последнюю её букву — она становится началом следующего слова.
+     */
+    fun pascalToCamel(name: String): String {
+        if (name.length <= 1) return name.lowercase()
+        if (!(name[0].isUpperCase() && name[1].isUpperCase())) {
+            return name.replaceFirstChar { it.lowercase() }
+        }
+        val firstLowerIdx = name.indexOfFirst { it.isLowerCase() }
+        val end = if (firstLowerIdx == -1) name.length else firstLowerIdx
+        val lowerEnd = (end - 1).coerceAtLeast(1)
+        return name.substring(0, lowerEnd).lowercase() + name.substring(lowerEnd)
+    }
+
     /** "SomeScreen" → "somescreen"  (используется для имени пакета/директории) */
     fun toFolderName(name: String): String = name.lowercase()
 

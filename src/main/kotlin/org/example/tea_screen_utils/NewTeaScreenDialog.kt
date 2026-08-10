@@ -21,7 +21,6 @@ class NewTeaScreenDialog(project: Project) : DialogWrapper(project) {
     private val hasParamsCheck = JBCheckBox("Has params", false)
     private val hasRecyclerViewCheck = JBCheckBox("Has RecyclerView", false)
     private val isBottomSheetCheck = JBCheckBox("Is Bottom Sheet", false)
-    private val isClosableCheck = JBCheckBox("Is Closable", true)
 
     private val noToolbarRadio = JRadioButton("No Toolbar", true)
     private val titledToolbarRadio = JRadioButton("Titled Toolbar", false)
@@ -34,7 +33,6 @@ class NewTeaScreenDialog(project: Project) : DialogWrapper(project) {
     val hasParams: Boolean get() = hasParamsCheck.isSelected
     val hasRecyclerView: Boolean get() = hasRecyclerViewCheck.isSelected
     val isBottomSheet: Boolean get() = isBottomSheetCheck.isSelected
-    val isClosable: Boolean get() = isClosableCheck.isSelected
     val hasTitledToolbar: Boolean get() = titledToolbarRadio.isSelected
 
     init {
@@ -65,10 +63,6 @@ class NewTeaScreenDialog(project: Project) : DialogWrapper(project) {
         panel.add(isBottomSheetCheck, gbc(0, 1.0, 2))
         row++
 
-        isClosableCheck.isVisible = false
-        panel.add(isClosableCheck, gbc(0, 1.0, 2))
-        row++
-
         val toolbarLabel = JBLabel("Toolbar:")
         val toolbarPanel = JPanel(FlowLayout(FlowLayout.LEFT, 20, 0)).apply {
             add(noToolbarRadio)
@@ -80,7 +74,6 @@ class NewTeaScreenDialog(project: Project) : DialogWrapper(project) {
 
         fun updateBottomSheetRelated() {
             val isBS = isBottomSheetCheck.isSelected
-            isClosableCheck.isVisible = isBS
             toolbarLabel.isVisible = !isBS
             toolbarPanel.isVisible = !isBS
             if (isBS) noToolbarRadio.isSelected = true
